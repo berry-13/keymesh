@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>KeyMesh Terminal</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0d1117;color:#c9d1d9;font-family:'Cascadia Code','Fira Code','Consolas',monospace;height:100vh;display:flex;flex-direction:column}
+#bar{background:#161b22;padding:6px 12px;font-size:12px;display:flex;gap:16px;align-items:center;border-bottom:1px solid #30363d;flex-shrink:0}
+.ind{display:inline-flex;align-items:center;gap:5px}
+.dot{width:7px;height:7px;border-radius:50%;flex-shrink:0}
+.on{background:#3fb950}.off{background:#f85149}
+#term{flex:1;padding:8px 10px;overflow-y:auto;white-space:pre-wrap;word-break:break-all;font-size:14px;line-height:1.5;cursor:text;outline:none;-webkit-user-select:none;user-select:none}
+.c{display:inline-block;width:.6em;height:1.15em;background:#58a6ff;animation:blink 1s step-end infinite;vertical-align:text-bottom}
+@keyframes blink{50%{opacity:0}}
+#info{color:#8b949e;font-size:11px;margin-left:auto}
+</style>
+</head>
+<body>
+<div id="bar">
+ <span class="ind"><span class="dot off" id="wd"></span><span id="ws">Connecting</span></span>
+ <span class="ind"><span class="dot off" id="ud"></span><span id="us">UART: ?</span></span>
+ <span id="info"></span>
+</div>
+<div id="term" tabindex="0"><span class="c"></span></div>
+<script>
+(function(){
+var term=document.getElementById('term'),
+    cursor=term.querySelector('.c'),
+    ws=null,rt=null;
+
+function setS(id,on,txt){
+ document.getElementById(id+'d').className='dot '+(on?'on':'off');
+ document.getElementById(id+'s'||id).textContent=txt;
+}
+function setWS(on,t){setS('w',on,t)}
+function setUART(on,t){setS('u',on,t)}
+
+function appendText(s){
+ // Insert text before the cursor span
+ var t=document.createTextNode(s);
+ term.insertBefore(t,cursor);
+ // Auto-scroll
+ term.scrollTop=term.scrollHeight;
+}
+
+function connect(){
+ var proto=location.protocol==='https:'?'wss:':'ws:';
+ ws=new WebSocket(proto+'//'+location.host+'/ws');
+ ws.onopen=function(){setWS(true,'Connected');if(rt){clearTimeout(rt);rt=null}};
+ ws.onclose=function(){setWS(false,'Disconnected');ws=null;rt=setTimeout(connect,2000)};
+ ws.onerror=function(){if(ws)ws.close()};
+ ws.onmessage=function(e){
+  try{
+   var m=JSON.parse(e.data);
+   if(m.type==='uart'){
+    // base64 decode
+    var raw=atob(m.data);
+    appendText(raw);
+   }else if(m.type==='status'){
+    setUART(m.uart,m.uart?'UART: active':'UART: none');
+    if(m.ip)document.getElementById('info').textContent=m.ip+' ('+m.mode+')';
+   }
+  }catch(ex){}
+ };
+}
+
+term.addEventListener('keydown',function(e){
+ e.preventDefault();
+ if(!ws||ws.readyState!==1)return;
+ var mod=[];
+ if(e.ctrlKey)mod.push('ctrl');
+ if(e.altKey)mod.push('alt');
+ if(e.shiftKey&&e.key.length>1)mod.push('shift');
+ if(e.metaKey)mod.push('super');
+ // Filter out bare modifier keys
+ if(['Control','Alt','Shift','Meta'].indexOf(e.key)>=0)return;
+ ws.send(JSON.stringify({type:'key',key:e.key,mod:mod}));
+});
+
+// Paste support
+term.addEventListener('paste',function(e){
+ e.preventDefault();
+ if(!ws||ws.readyState!==1)return;
+ var text=(e.clipboardData||window.clipboardData).getData('text');
+ if(text)ws.send(JSON.stringify({type:'raw',data:text}));
+});
+
+// Keep focus on terminal
+document.addEventListener('click',function(){term.focus()});
+term.focus();
+connect();
+})();
+</script>
+</body>
+</html>
