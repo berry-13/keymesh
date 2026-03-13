@@ -126,6 +126,7 @@ class WebServer:
     async def _ws_upgrade(self, reader, writer, headers):
         ws_key = headers.get("sec-websocket-key", "")
         accept = _ws_accept_key(ws_key)
+        print("WS upgrade: key=%s accept=%s" % (ws_key[:20], accept[:20]))
         response = (
             "HTTP/1.1 101 Switching Protocols\r\n"
             "Upgrade: websocket\r\n"
@@ -134,22 +135,28 @@ class WebServer:
         )
         writer.write(response.encode())
         await writer.drain()
+        print("WS handshake sent")
 
         self._client_id += 1
         cid = "ws_%d" % self._client_id
         self._uart_buf.register(cid)
         self._ws_clients[cid] = writer
 
-        await self._ws_send(writer, json.dumps({
-            "type": "status",
-            "uart": self._uart_available,
-            "ip": self._ip,
-            "mode": self._config.get("wifi_mode", "ap"),
-        }))
+        try:
+            await self._ws_send(writer, json.dumps({
+                "type": "status",
+                "uart": self._uart_available,
+                "ip": self._ip,
+                "mode": self._config.get("wifi_mode", "ap"),
+            }))
+            print("WS status sent to %s" % cid)
+        except Exception as e:
+            print("WS status send failed: %s" % e)
 
         try:
             while True:
                 opcode, payload = await self._ws_recv(reader)
+                print("WS recv: opcode=%s len=%d" % (opcode, len(payload) if payload else 0))
                 if opcode is None or opcode == 0x08:
                     break
                 if opcode == 0x09:
@@ -157,8 +164,10 @@ class WebServer:
                     continue
                 if opcode == 0x01:
                     await self._handle_ws_message(payload)
-        except Exception:
-            pass
+        except Exception as e:
+            import traceback
+            print("WS error: %s" % e)
+            traceback.print_exc()
         finally:
             self._ws_clients.pop(cid, None)
             self._uart_buf.unregister(cid)
