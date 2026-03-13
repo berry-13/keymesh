@@ -83,11 +83,17 @@ def _setup_sta(config):
     ssid = config.get("sta_ssid", "")
     password = config.get("sta_password", "")
 
+    # Check if already connected
+    ip = _get_ip()
+    if ip and ip != "127.0.0.1":
+        print("STA mode: already connected at %s" % ip)
+        return ip
+
     if not ssid:
         print("STA: no SSID configured, falling back to AP")
         return _setup_ap(config)
 
-    # Try nmcli first (Bookworm), then wpa_supplicant
+    # Try nmcli first (Bookworm default)
     r = _run(["nmcli", "dev", "wifi", "connect", ssid, "password", password])
     if r.returncode != 0:
         # wpa_supplicant fallback
@@ -95,7 +101,7 @@ def _setup_sta(config):
         with open("/tmp/keymesh_wpa.conf", "w") as f:
             f.write(wpa_conf)
         _run(["wpa_supplicant", "-B", "-i", "wlan0", "-c", "/tmp/keymesh_wpa.conf"])
-        _run(["dhclient", "wlan0"])
+        _run(["dhcpcd", "wlan0"])
 
     # Wait for connection
     for _ in range(15):
