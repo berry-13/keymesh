@@ -34,7 +34,6 @@ KEY_CAPSLOCK = 0x39
 KEY_F1 = 0x3A
 
 # Printable ASCII to (keycode, modifier) lookup.
-# Built programmatically for efficiency.
 _ASCII_MAP = {}
 
 # a-z
@@ -57,9 +56,9 @@ _ASCII_MAP[ord('\n')] = (KEY_ENTER, MOD_NONE)
 _ASCII_MAP[ord('\r')] = (KEY_ENTER, MOD_NONE)
 _ASCII_MAP[ord('\t')] = (KEY_TAB, MOD_NONE)
 _ASCII_MAP[ord(' ')] = (KEY_SPACE, MOD_NONE)
-_ASCII_MAP[0x1B] = (KEY_ESC, MOD_NONE)  # Escape
-_ASCII_MAP[0x7F] = (KEY_BACKSPACE, MOD_NONE)  # DEL -> backspace
-_ASCII_MAP[0x08] = (KEY_BACKSPACE, MOD_NONE)  # BS
+_ASCII_MAP[0x1B] = (KEY_ESC, MOD_NONE)
+_ASCII_MAP[0x7F] = (KEY_BACKSPACE, MOD_NONE)
+_ASCII_MAP[0x08] = (KEY_BACKSPACE, MOD_NONE)
 
 # Unshifted symbols
 _UNSHIFTED = {
@@ -105,7 +104,6 @@ for i in range(12):
 
 
 def _mod_bits(mod_list):
-    """Convert modifier name list ["ctrl","shift"] to bitmask."""
     bits = 0
     for m in mod_list:
         ml = m.lower()
@@ -121,35 +119,23 @@ def _mod_bits(mod_list):
 
 
 def char_to_hid(ch):
-    """Map a single character (int ordinal or str) to (keycode, modifier).
-    Returns None if unmappable.
-    """
     c = ord(ch) if isinstance(ch, str) else ch
     return _ASCII_MAP.get(c)
 
 
 def key_to_hid(name, mod_list=None):
-    """Map a named key (e.g. 'ArrowUp', 'a') with optional modifier list.
-    Returns (keycode, modifier_bitmask) or None.
-    """
     extra = _mod_bits(mod_list) if mod_list else 0
-
-    # Named special key?
     entry = _NAMED_KEYS.get(name)
     if entry:
         return (entry[0], entry[1] | extra)
-
-    # Single printable character
     if len(name) == 1:
         entry = _ASCII_MAP.get(ord(name))
         if entry:
             return (entry[0], entry[1] | extra)
-
     return None
 
 
-# Terminal escape sequence parsing for raw TCP mode.
-# Maps VT100 escape sequences to (keycode, modifier).
+# VT100 escape sequences for raw TCP mode
 _ESC_SEQUENCES = {
     b"[A": (KEY_UP, MOD_NONE),
     b"[B": (KEY_DOWN, MOD_NONE),
@@ -177,9 +163,6 @@ _ESC_SEQUENCES = {
 
 
 def parse_esc_sequence(buf):
-    """Try to match buf (bytes after ESC) to a known escape sequence.
-    Returns ((keycode, modifier), consumed_length) or (None, 0).
-    """
     for seq, hid in _ESC_SEQUENCES.items():
         if buf[:len(seq)] == seq:
             return (hid, len(seq))
@@ -187,9 +170,6 @@ def parse_esc_sequence(buf):
 
 
 def byte_to_hid(b):
-    """Map a single byte (from raw TCP) to (keycode, modifier) or None.
-    For control chars (0x01-0x1A), returns the letter key with Ctrl modifier.
-    """
     if 0x01 <= b <= 0x1A:
         return (0x04 + b - 1, MOD_CTRL)
     return _ASCII_MAP.get(b)

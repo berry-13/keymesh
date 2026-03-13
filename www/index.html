@@ -38,10 +38,8 @@ function setWS(on,t){setS('w',on,t)}
 function setUART(on,t){setS('u',on,t)}
 
 function appendText(s){
- // Insert text before the cursor span
  var t=document.createTextNode(s);
  term.insertBefore(t,cursor);
- // Auto-scroll
  term.scrollTop=term.scrollHeight;
 }
 
@@ -55,7 +53,6 @@ function connect(){
   try{
    var m=JSON.parse(e.data);
    if(m.type==='uart'){
-    // base64 decode
     var raw=atob(m.data);
     appendText(raw);
    }else if(m.type==='status'){
@@ -74,12 +71,10 @@ term.addEventListener('keydown',function(e){
  if(e.altKey)mod.push('alt');
  if(e.shiftKey&&e.key.length>1)mod.push('shift');
  if(e.metaKey)mod.push('super');
- // Filter out bare modifier keys
  if(['Control','Alt','Shift','Meta'].indexOf(e.key)>=0)return;
  ws.send(JSON.stringify({type:'key',key:e.key,mod:mod}));
 });
 
-// Paste support
 term.addEventListener('paste',function(e){
  e.preventDefault();
  if(!ws||ws.readyState!==1)return;
@@ -87,7 +82,6 @@ term.addEventListener('paste',function(e){
  if(text)ws.send(JSON.stringify({type:'raw',data:text}));
 });
 
-// Keep focus on terminal
 document.addEventListener('click',function(){term.focus()});
 term.focus();
 connect();

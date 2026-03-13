@@ -1,8 +1,9 @@
 import asyncio
 import json
 import hashlib
-import binascii
+import base64
 import struct
+import os
 
 from keymap import key_to_hid, char_to_hid
 
@@ -10,24 +11,15 @@ _WS_MAGIC = b"258EAFA5-E914-47DA-95CA-5AB9F3811C11"
 
 
 def _ws_accept_key(ws_key):
-    """Compute Sec-WebSocket-Accept from client's Sec-WebSocket-Key."""
-    h = hashlib.sha1(ws_key.strip().encode() + _WS_MAGIC)
-    return binascii.b2a_base64(h.digest()).strip().decode()
+    h = hashlib.sha1(ws_key.strip().encode() + _WS_MAGIC).digest()
+    return base64.b64encode(h).decode()
 
 
 class WebServer:
-    """HTTP server + WebSocket for browser terminal.
+    """HTTP + WebSocket server for browser terminal.
 
     GET /     -> serves www/index.html
     GET /ws   -> WebSocket upgrade
-
-    WebSocket protocol:
-    Client -> Server:
-        {"type":"key","key":"a","mod":[]}
-        {"type":"raw","data":"ls -la\\n"}
-    Server -> Client:
-        {"type":"uart","data":"<base64>"}
-        {"type":"status","uart":true,"ip":"...","mode":"..."}
     """
 
     def __init__(self, config, keystroke_queue, uart_buf, ip=None):
@@ -40,6 +32,7 @@ class WebServer:
         self._client_id = 0
         self._uart_available = False
         self._html = None
+        self._base_dir = os.path.dirname(os.path.abspath(__file__))
 
     def set_uart_available(self, available):
         self._uart_available = available
@@ -48,7 +41,8 @@ class WebServer:
         if self._html is not None:
             return self._html
         try:
-            with open("www/index.html", "r") as f:
+            path = os.path.join(self._base_dir, "www", "index.html")
+            with open(path, "r") as f:
                 self._html = f.read()
         except OSError:
             self._html = "<html><body><h1>KeyMesh</h1><p>index.html not found</p></body></html>"
@@ -59,10 +53,9 @@ class WebServer:
             self._handle_request, "0.0.0.0", self._port
         )
         print("Web server listening on port %d" % self._port)
-        # Start UART fan-out task
         asyncio.create_task(self._uart_fanout())
-        while True:
-            await asyncio.sleep(3600)
+        async with server:
+            await server.serve_forever()
 
     async def _handle_request(self, reader, writer):
         try:
@@ -77,7 +70,6 @@ class WebServer:
                 return
             method, path = parts[0], parts[1]
 
-            # Read headers
             headers = {}
             while True:
                 line = await asyncio.wait_for(reader.readline(), timeout=5)
@@ -90,7 +82,7 @@ class WebServer:
 
             if path == "/ws" and "upgrade" in headers.get("connection", "").lower():
                 await self._ws_upgrade(reader, writer, headers)
-            elif method == "GET" and (path == "/" or path == "/index.html"):
+            elif method == "GET" and path in ("/", "/index.html"):
                 await self._serve_html(writer)
             else:
                 await self._send_response(writer, 404, "Not Found")
@@ -145,7 +137,6 @@ class WebServer:
         self._uart_buf.register(cid)
         self._ws_clients[cid] = writer
 
-        # Send initial status
         await self._ws_send(writer, json.dumps({
             "type": "status",
             "uart": self._uart_available,
@@ -158,10 +149,10 @@ class WebServer:
                 opcode, payload = await self._ws_recv(reader)
                 if opcode is None or opcode == 0x08:
                     break
-                if opcode == 0x09:  # Ping
+                if opcode == 0x09:
                     await self._ws_send_frame(writer, 0x0A, payload)
                     continue
-                if opcode == 0x01:  # Text frame
+                if opcode == 0x01:
                     await self._handle_ws_message(payload)
         except Exception:
             pass
@@ -187,14 +178,13 @@ class WebServer:
                     await self._queue.put(hid)
 
     async def _uart_fanout(self):
-        """Periodically push UART data to all connected WebSocket clients."""
         while True:
             dead = []
-            for cid, writer in self._ws_clients.items():
+            for cid, writer in list(self._ws_clients.items()):
                 data = self._uart_buf.read(cid)
                 if data:
                     try:
-                        encoded = binascii.b2a_base64(data).decode().strip()
+                        encoded = base64.b64encode(data).decode()
                         msg = json.dumps({"type": "uart", "data": encoded})
                         await self._ws_send(writer, msg)
                     except Exception:
@@ -202,15 +192,12 @@ class WebServer:
             for cid in dead:
                 self._ws_clients.pop(cid, None)
                 self._uart_buf.unregister(cid)
-            await asyncio.sleep_ms(20)
+            await asyncio.sleep(0.02)
 
     # --- WebSocket framing ---
 
     async def _ws_recv(self, reader):
-        """Read one WebSocket frame. Returns (opcode, payload_bytes) or (None, None)."""
         hdr = await reader.readexactly(2)
-        if len(hdr) < 2:
-            return (None, None)
         opcode = hdr[0] & 0x0F
         masked = hdr[1] & 0x80
         length = hdr[1] & 0x7F
@@ -229,13 +216,11 @@ class WebServer:
         return (opcode, payload)
 
     async def _ws_send(self, writer, text):
-        """Send a text WebSocket frame."""
         data = text.encode() if isinstance(text, str) else text
         await self._ws_send_frame(writer, 0x01, data)
 
     async def _ws_send_frame(self, writer, opcode, data):
-        """Send a raw WebSocket frame (server -> client, no mask)."""
-        b0 = 0x80 | opcode  # FIN + opcode
+        b0 = 0x80 | opcode
         length = len(data)
         if length < 126:
             writer.write(bytes([b0, length]))

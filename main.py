@@ -1,5 +1,7 @@
+#!/usr/bin/env python3
 import asyncio
 import json
+import os
 
 from net import setup_wifi
 from hid import HIDKeyboard
@@ -10,7 +12,10 @@ from ring_buffer import RingBuffer
 
 
 async def main():
-    with open("config.json") as f:
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    config_path = os.path.join(base_dir, "config.json")
+
+    with open(config_path) as f:
         config = json.load(f)
 
     ip = setup_wifi(config)
@@ -30,12 +35,17 @@ async def main():
     print("  Raw TCP: %s:%d" % (ip, config.get("tcp_port", 4444)))
     print("  UART:    %s" % ("active" if uart.uart_available else "not connected"))
 
-    await asyncio.gather(
-        hid.run(keystroke_queue),
-        uart.run(),
-        tcp.run(),
-        web.run(),
-    )
+    try:
+        await asyncio.gather(
+            hid.run(keystroke_queue),
+            uart.run(),
+            tcp.run(),
+            web.run(),
+        )
+    finally:
+        hid.close()
+        uart.close()
 
 
-asyncio.run(main())
+if __name__ == "__main__":
+    asyncio.run(main())
