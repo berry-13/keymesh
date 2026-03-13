@@ -126,15 +126,12 @@ class WebServer:
     async def _ws_upgrade(self, reader, writer, headers):
         ws_key = headers.get("sec-websocket-key", "")
         accept = _ws_accept_key(ws_key)
-        print("WS upgrade: key=%s accept=%s" % (ws_key[:20], accept[:20]))
-        response = (
-            "HTTP/1.1 101 Switching Protocols\r\n"
-            "Upgrade: websocket\r\n"
-            "Connection: Upgrade\r\n"
-            "Sec-WebSocket-Accept: %s\r\n\r\n" % accept
-        )
+        print("WS upgrade: key=[%s] accept=[%s]" % (ws_key, accept))
+        response = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: %s\r\n\r\n" % accept
+        print("WS response: %s" % repr(response))
         writer.write(response.encode())
         await writer.drain()
+        await asyncio.sleep(0.1)
         print("WS handshake sent")
 
         self._client_id += 1
