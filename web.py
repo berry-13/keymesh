@@ -80,14 +80,17 @@ class WebServer:
                     k, v = decoded.split(":", 1)
                     headers[k.strip().lower()] = v.strip()
 
+            print("HTTP: %s %s | connection: %s" % (method, path, headers.get("connection", "")))
             if path == "/ws" and "upgrade" in headers.get("connection", "").lower():
                 await self._ws_upgrade(reader, writer, headers)
             elif method == "GET" and path in ("/", "/index.html"):
                 await self._serve_html(writer)
             else:
                 await self._send_response(writer, 404, "Not Found")
-        except Exception:
-            pass
+        except Exception as e:
+            import traceback
+            print("Request error: %s" % e)
+            traceback.print_exc()
         finally:
             try:
                 writer.close()
