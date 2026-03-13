@@ -1,25 +1,23 @@
 import asyncio
 import json
-import hashlib
 import base64
-import struct
 import os
 
 from keymap import key_to_hid, char_to_hid
 
-_WS_MAGIC = b"258EAFA5-E914-47DA-95CA-5AB9F3811C11"
-
-
-def _ws_accept_key(ws_key):
-    h = hashlib.sha1(ws_key.strip().encode() + _WS_MAGIC).digest()
-    return base64.b64encode(h).decode()
+try:
+    import websockets
+    from websockets.server import serve as ws_serve
+    _HAS_WEBSOCKETS = True
+except ImportError:
+    _HAS_WEBSOCKETS = False
 
 
 class WebServer:
     """HTTP + WebSocket server for browser terminal.
 
-    GET /     -> serves www/index.html
-    GET /ws   -> WebSocket upgrade
+    Uses the 'websockets' library for reliable WebSocket handling.
+    HTTP serving (index.html) is done via the process_request hook.
     """
 
     def __init__(self, config, keystroke_queue, uart_buf, ip=None):
@@ -49,125 +47,61 @@ class WebServer:
         return self._html
 
     async def run(self):
-        server = await asyncio.start_server(
-            self._handle_request, "0.0.0.0", self._port
-        )
-        print("Web server listening on port %d" % self._port)
-        asyncio.create_task(self._uart_fanout())
-        async with server:
-            await server.serve_forever()
-
-    async def _handle_request(self, reader, writer):
-        try:
-            line = await asyncio.wait_for(reader.readline(), timeout=5)
-            if not line:
-                writer.close()
-                return
-            request_line = line.decode().strip()
-            parts = request_line.split(" ")
-            if len(parts) < 2:
-                writer.close()
-                return
-            method, path = parts[0], parts[1]
-
-            headers = {}
+        if not _HAS_WEBSOCKETS:
+            print("ERROR: 'websockets' library not installed")
+            print("Run: sudo pip3 install websockets")
             while True:
-                line = await asyncio.wait_for(reader.readline(), timeout=5)
-                if not line or line == b"\r\n":
-                    break
-                decoded = line.decode().strip()
-                if ":" in decoded:
-                    k, v = decoded.split(":", 1)
-                    headers[k.strip().lower()] = v.strip()
+                await asyncio.sleep(3600)
 
-            print("HTTP: %s %s | connection: %s" % (method, path, headers.get("connection", "")))
-            if path == "/ws" and "upgrade" in headers.get("connection", "").lower():
-                await self._ws_upgrade(reader, writer, headers)
-            elif method == "GET" and path in ("/", "/index.html"):
-                await self._serve_html(writer)
-            else:
-                await self._send_response(writer, 404, "Not Found")
-        except Exception as e:
-            import traceback
-            print("Request error: %s" % e)
-            traceback.print_exc()
-        finally:
-            try:
-                writer.close()
-                await writer.wait_closed()
-            except Exception:
-                pass
+        async with ws_serve(
+            self._ws_handler,
+            "0.0.0.0",
+            self._port,
+            process_request=self._process_request,
+        ):
+            print("Web server listening on port %d" % self._port)
+            asyncio.create_task(self._uart_fanout())
+            await asyncio.Future()  # run forever
 
-    async def _serve_html(self, writer):
-        html = self._load_html()
-        header = (
-            "HTTP/1.1 200 OK\r\n"
-            "Content-Type: text/html; charset=utf-8\r\n"
-            "Content-Length: %d\r\n"
-            "Connection: close\r\n\r\n" % len(html)
-        )
-        writer.write(header.encode())
-        writer.write(html.encode())
-        await writer.drain()
+    async def _process_request(self, path, request_headers):
+        """Handle plain HTTP requests; return None to allow WebSocket upgrade."""
+        if path in ("/", "/index.html"):
+            html = self._load_html().encode()
+            return (200, [
+                ("Content-Type", "text/html; charset=utf-8"),
+                ("Content-Length", str(len(html))),
+                ("Connection", "close"),
+            ], html)
+        if path == "/ws":
+            return None  # let websockets library handle the upgrade
+        return (404, [], b"404 Not Found")
 
-    async def _send_response(self, writer, code, message):
-        body = "%d %s" % (code, message)
-        header = (
-            "HTTP/1.1 %d %s\r\n"
-            "Content-Length: %d\r\n"
-            "Connection: close\r\n\r\n" % (code, message, len(body))
-        )
-        writer.write(header.encode())
-        writer.write(body.encode())
-        await writer.drain()
-
-    # --- WebSocket ---
-
-    async def _ws_upgrade(self, reader, writer, headers):
-        ws_key = headers.get("sec-websocket-key", "")
-        accept = _ws_accept_key(ws_key)
-        print("WS upgrade: key=[%s] accept=[%s]" % (ws_key, accept))
-        response = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: %s\r\n\r\n" % accept
-        print("WS response: %s" % repr(response))
-        writer.write(response.encode())
-        await writer.drain()
-        await asyncio.sleep(0.1)
-        print("WS handshake sent")
-
+    async def _ws_handler(self, websocket, path=None):
+        """Handle a WebSocket connection."""
         self._client_id += 1
         cid = "ws_%d" % self._client_id
         self._uart_buf.register(cid)
-        self._ws_clients[cid] = writer
+        self._ws_clients[cid] = websocket
+        print("WebSocket client connected: %s" % cid)
 
         try:
-            await self._ws_send(writer, json.dumps({
+            await websocket.send(json.dumps({
                 "type": "status",
                 "uart": self._uart_available,
                 "ip": self._ip,
                 "mode": self._config.get("wifi_mode", "ap"),
             }))
-            print("WS status sent to %s" % cid)
-        except Exception as e:
-            print("WS status send failed: %s" % e)
 
-        try:
-            while True:
-                opcode, payload = await self._ws_recv(reader)
-                print("WS recv: opcode=%s len=%d" % (opcode, len(payload) if payload else 0))
-                if opcode is None or opcode == 0x08:
-                    break
-                if opcode == 0x09:
-                    await self._ws_send_frame(writer, 0x0A, payload)
-                    continue
-                if opcode == 0x01:
-                    await self._handle_ws_message(payload)
+            async for message in websocket:
+                await self._handle_ws_message(message)
+        except websockets.ConnectionClosed:
+            pass
         except Exception as e:
-            import traceback
-            print("WS error: %s" % e)
-            traceback.print_exc()
+            print("WS error (%s): %s" % (cid, e))
         finally:
             self._ws_clients.pop(cid, None)
             self._uart_buf.unregister(cid)
+            print("WebSocket client disconnected: %s" % cid)
 
     async def _handle_ws_message(self, payload):
         try:
@@ -187,55 +121,19 @@ class WebServer:
                     await self._queue.put(hid)
 
     async def _uart_fanout(self):
+        """Push UART data to all connected WebSocket clients."""
         while True:
             dead = []
-            for cid, writer in list(self._ws_clients.items()):
+            for cid, websocket in list(self._ws_clients.items()):
                 data = self._uart_buf.read(cid)
                 if data:
                     try:
                         encoded = base64.b64encode(data).decode()
                         msg = json.dumps({"type": "uart", "data": encoded})
-                        await self._ws_send(writer, msg)
+                        await websocket.send(msg)
                     except Exception:
                         dead.append(cid)
             for cid in dead:
                 self._ws_clients.pop(cid, None)
                 self._uart_buf.unregister(cid)
             await asyncio.sleep(0.02)
-
-    # --- WebSocket framing ---
-
-    async def _ws_recv(self, reader):
-        hdr = await reader.readexactly(2)
-        opcode = hdr[0] & 0x0F
-        masked = hdr[1] & 0x80
-        length = hdr[1] & 0x7F
-        if length == 126:
-            raw = await reader.readexactly(2)
-            length = struct.unpack(">H", raw)[0]
-        elif length == 127:
-            raw = await reader.readexactly(8)
-            length = struct.unpack(">Q", raw)[0]
-        mask = None
-        if masked:
-            mask = await reader.readexactly(4)
-        payload = await reader.readexactly(length)
-        if mask:
-            payload = bytes(payload[i] ^ mask[i % 4] for i in range(len(payload)))
-        return (opcode, payload)
-
-    async def _ws_send(self, writer, text):
-        data = text.encode() if isinstance(text, str) else text
-        await self._ws_send_frame(writer, 0x01, data)
-
-    async def _ws_send_frame(self, writer, opcode, data):
-        b0 = 0x80 | opcode
-        length = len(data)
-        if length < 126:
-            writer.write(bytes([b0, length]))
-        elif length < 65536:
-            writer.write(bytes([b0, 126]) + struct.pack(">H", length))
-        else:
-            writer.write(bytes([b0, 127]) + struct.pack(">Q", length))
-        writer.write(data)
-        await writer.drain()

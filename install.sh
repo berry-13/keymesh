@@ -13,7 +13,8 @@ echo "=== KeyMesh Installer ==="
 # 1. Install dependencies
 echo "[1/6] Installing packages..."
 apt-get update -qq
-apt-get install -y -qq hostapd dnsmasq python3 > /dev/null
+apt-get install -y -qq hostapd dnsmasq python3 python3-pip > /dev/null
+pip3 install --break-system-packages websockets 2>/dev/null || pip3 install websockets
 # Stop them from auto-starting — keymesh manages them
 systemctl disable hostapd 2>/dev/null || true
 systemctl stop hostapd 2>/dev/null || true
